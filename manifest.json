@@ -1,0 +1,25 @@
+{
+  "short_name": "Court IQ",
+  "name": "Court IQ Tennis Analytics",
+  "id": "/",
+  "scope": "/",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "theme_color": "#020617",
+  "background_color": "#020617",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://fdmw4tuurixhnt6l.public.blob.vercel-storage.com/icon.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://fdmw4tuurixhnt6l.public.blob.vercel-storage.com/icon.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ]
+}
