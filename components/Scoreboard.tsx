@@ -14,7 +14,7 @@ interface ScoreboardProps {
 }
 
 export const Scoreboard: React.FC<ScoreboardProps> = ({ state, lang, onToggleLang, onBroadcast, readOnly }) => {
-  const { players, sets, games, points, server, isTiebreak, tiebreakScore, winner, isSecondServe, broadcastId } = state;
+  const { players, teamPlayers, sets, games, points, server, serverSlot, isTiebreak, tiebreakScore, winner, isSecondServe, broadcastId, config } = state;
   const t = translations[lang];
   const [showCopied, setShowCopied] = useState(false);
 
@@ -73,6 +73,9 @@ export const Scoreboard: React.FC<ScoreboardProps> = ({ state, lang, onToggleLan
         />
         <span className={`font-display font-semibold text-[15px] sm:text-lg truncate flex-1 min-w-0 flex items-center gap-1.5 ${isWinner ? 'text-tennis-green' : isServing ? 'text-white' : 'text-slate-300'}`}>
           <span className="truncate">{players[id]}</span>
+          {config.matchType === 'doubles' && teamPlayers && server === id && !winner && serverSlot && (
+            <span className="text-[10px] text-tennis-green font-medium shrink-0">· {teamPlayers[id][serverSlot === 'a' ? 0 : 1]}</span>
+          )}
           {isWinner && <Trophy className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 fill-current" />}
         </span>
 

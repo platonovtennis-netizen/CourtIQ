@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { SetupScreen } from './components/SetupScreen';
 import { MatchInterface } from './components/MatchInterface';
 import { MatchState, PointAction, MatchConfig, Language, TeamPlayers } from './types';
-import { getInitialState, processPoint, undoLastPoint, createIndividualStats } from './utils/tennisEngine';
+import { getInitialState, processPoint, undoLastPoint, createIndividualStats, migrateMatchState, selectDoublesServer } from './utils/tennisEngine';
 import { ref, set, onValue, off } from 'firebase/database';
 import { db } from './utils/firebase';
 
@@ -24,7 +24,7 @@ const App: React.FC = () => {
         const unsubscribe = onValue(matchRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
-                setMatchState(data);
+                setMatchState(migrateMatchState(data));
             }
         }, (error) => {
             console.error("Firebase read error:", error);
@@ -57,11 +57,14 @@ const App: React.FC = () => {
     const p2Default = lang === 'ru' ? 'Игрок 2' : 'Player 2';
     const isDoubles = config.matchType === 'doubles' && !!teamPlayers;
 
-    setMatchState(prev => ({
-      ...prev,
+    const fresh = getInitialState(lang);
+    setMatchState({
+      ...fresh,
       status: 'active',
       config,
       server: config.initialServer || 'p1',
+      serverSlot: null,
+      doublesServerSlots: { p1: null, p2: null },
       startTime: Date.now(),
       players: isDoubles
         ? {
@@ -74,7 +77,12 @@ const App: React.FC = () => {
           },
       teamPlayers: isDoubles ? teamPlayers! : null,
       individualStats: isDoubles ? createIndividualStats() : null,
-    }));
+    });
+  };
+
+  const handleSelectDoublesServer = (slot: 'a' | 'b') => {
+    if (isViewer) return;
+    setMatchState(current => selectDoublesServer(current, slot));
   };
 
   const handlePoint = (action: PointAction) => {
@@ -128,6 +136,7 @@ const App: React.FC = () => {
           state={matchState} 
           lang={lang}
           onPoint={handlePoint} 
+          onSelectDoublesServer={handleSelectDoublesServer}
           onUndo={handleUndo} 
           onEndMatch={handleEndMatch}
           onShowStats={() => {}}

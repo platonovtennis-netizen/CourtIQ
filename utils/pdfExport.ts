@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import { MatchState, Language, MatchStats, PlayerId } from '../types';
 import { translations } from './translations';
+import { getServeAnalytics, getReturnAnalytics } from './analytics';
 import { DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64 } from './pdfFonts';
 
 const getPercentage = (num: number, total: number): number => {
@@ -19,7 +20,7 @@ interface Cursor {
   y: number;
 }
 
-export function downloadMatchPdf(state: MatchState, lang: Language): void {
+export function downloadMatchPdf(state: MatchState, lang: Language, mode: 'simple' | 'advanced' = 'advanced'): void {
   const t = translations[lang];
   const { players, teamPlayers, sets, journal, stats, individualStats, winner, startTime, config } = state;
   const isDoubles = config.matchType === 'doubles' && !!teamPlayers;
@@ -75,7 +76,7 @@ export function downloadMatchPdf(state: MatchState, lang: Language): void {
   pageHeader(t.matchResult || '');
 
   // --- Scoreboard table: one row per side, one column per set (TV broadcast style) ---
-  const playedSets = sets.filter((s) => s.winner || s.p1 > 0 || s.p2 > 0);
+  const playedSets = sets.length > 0 ? sets : [{ p1: 0, p2: 0 }];
   const numSets = Math.max(playedSets.length, 1);
   const nameColW = 60;
   const totalColW = 14;
@@ -212,64 +213,42 @@ export function downloadMatchPdf(state: MatchState, lang: Language): void {
   sectionHeader(t.totalPoints);
   statRow(t.totalPoints, stats.p1.totalPointsWon, stats.p2.totalPointsWon, stats.p1.totalPointsWon, stats.p2.totalPointsWon);
 
-  // --- Service ---
-  sectionHeader(t.serviceStats);
-  statRow(t.aces, stats.p1.aces, stats.p2.aces, stats.p1.aces, stats.p2.aces);
-  statRow(t.doubleFaults, stats.p1.doubleFaults, stats.p2.doubleFaults, stats.p1.doubleFaults, stats.p2.doubleFaults, true);
-  statRow(
-    t.firstServeIn,
-    `${getPercentage(stats.p1.firstServesIn, stats.p1.servicePointsTotal)}%`,
-    `${getPercentage(stats.p2.firstServesIn, stats.p2.servicePointsTotal)}%`,
-    stats.p1.firstServesIn,
-    stats.p2.firstServesIn
-  );
-  statRow(
-    t.firstServePointsWon,
-    `${getPercentage(stats.p1.firstServePointsWon, stats.p1.firstServesIn)}%`,
-    `${getPercentage(stats.p2.firstServePointsWon, stats.p2.firstServesIn)}%`
-  );
-  statRow(
-    t.secondServePointsWon,
-    `${getPercentage(stats.p1.secondServePointsWon, stats.p1.secondServePointsTotal)}%`,
-    `${getPercentage(stats.p2.secondServePointsWon, stats.p2.secondServePointsTotal)}%`
-  );
-  statRow(
-    t.breakPointsSaved,
-    `${stats.p1.breakPointsSaved}/${stats.p1.breakPointsFaced}`,
-    `${stats.p2.breakPointsSaved}/${stats.p2.breakPointsFaced}`,
-    stats.p1.breakPointsSaved,
-    stats.p2.breakPointsSaved
-  );
+  if (mode === 'simple') {
+    sectionHeader(t.serviceStats);
+    statRow(t.pointsWonOnServe, `${getPercentage(stats.p1.servicePointsWon, stats.p1.servicePointsTotal)}%`, `${getPercentage(stats.p2.servicePointsWon, stats.p2.servicePointsTotal)}%`);
+    statRow(t.breakPointsSaved, `${stats.p1.breakPointsSaved}/${stats.p1.breakPointsFaced}`, `${stats.p2.breakPointsSaved}/${stats.p2.breakPointsFaced}`, stats.p1.breakPointsSaved, stats.p2.breakPointsSaved);
 
-  // --- Return ---
-  sectionHeader(t.returnStats);
-  statRow(
-    t.returnFirstServePointsWon,
-    `${getPercentage(stats.p1.returnFirstServePointsWon, stats.p2.firstServesIn)}%`,
-    `${getPercentage(stats.p2.returnFirstServePointsWon, stats.p1.firstServesIn)}%`
-  );
-  statRow(
-    t.returnSecondServePointsWon,
-    `${getPercentage(stats.p1.returnSecondServePointsWon, stats.p2.secondServePointsTotal)}%`,
-    `${getPercentage(stats.p2.returnSecondServePointsWon, stats.p1.secondServePointsTotal)}%`
-  );
-  statRow(t.returnWinners, stats.p1.returnWinners, stats.p2.returnWinners, stats.p1.returnWinners, stats.p2.returnWinners);
-  statRow(
-    t.breakPointsConverted,
-    `${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`,
-    `${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`,
-    stats.p1.breakPointsWon,
-    stats.p2.breakPointsWon
-  );
+    sectionHeader(t.returnStats);
+    statRow(t.pointsWonOnReturn, `${getReturnAnalytics(stats.p1, stats.p2).pointsWon}%`, `${getReturnAnalytics(stats.p2, stats.p1).pointsWon}%`);
+    statRow(t.breakPointsConverted, `${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`, `${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`, stats.p1.breakPointsWon, stats.p2.breakPointsWon);
+  } else {
+    // --- Service ---
+    sectionHeader(t.serviceStats);
+    statRow(t.aces, stats.p1.aces, stats.p2.aces, stats.p1.aces, stats.p2.aces);
+    statRow(t.doubleFaults, stats.p1.doubleFaults, stats.p2.doubleFaults, stats.p1.doubleFaults, stats.p2.doubleFaults, true);
+    statRow(t.firstServeIn, `${getServeAnalytics(stats.p1).firstServeIn}%`, `${getServeAnalytics(stats.p2).firstServeIn}%`, stats.p1.firstServesIn, stats.p2.firstServesIn);
+    statRow(t.firstServePointsWon, `${getPercentage(stats.p1.firstServePointsWon, stats.p1.firstServesIn)}%`, `${getPercentage(stats.p2.firstServePointsWon, stats.p2.firstServesIn)}%`);
+    statRow(t.secondServeIn, `${getServeAnalytics(stats.p1).secondServeIn}%`, `${getServeAnalytics(stats.p2).secondServeIn}%`);
+    statRow(t.secondServePointsWon, `${getPercentage(stats.p1.secondServePointsWon, stats.p1.secondServePointsTotal)}%`, `${getPercentage(stats.p2.secondServePointsWon, stats.p2.secondServePointsTotal)}%`);
+    statRow(t.holdPercentage, `${getServeAnalytics(stats.p1).hold}%`, `${getServeAnalytics(stats.p2).hold}%`);
+    statRow(t.breakPointsSaved, `${stats.p1.breakPointsSaved}/${stats.p1.breakPointsFaced}`, `${stats.p2.breakPointsSaved}/${stats.p2.breakPointsFaced}`, stats.p1.breakPointsSaved, stats.p2.breakPointsSaved);
 
-  // --- Efficiency ---
-  sectionHeader(t.efficiencyStats);
-  statRow(t.winners, stats.p1.winners, stats.p2.winners, stats.p1.winners, stats.p2.winners);
-  statRow(t.unforcedErrors, stats.p1.unforcedErrors, stats.p2.unforcedErrors, stats.p1.unforcedErrors, stats.p2.unforcedErrors, true);
-  statRow(t.forcedErrors, stats.p1.forcedErrors, stats.p2.forcedErrors, stats.p1.forcedErrors, stats.p2.forcedErrors, true);
-  const margin1 = stats.p1.winners - stats.p1.unforcedErrors;
-  const margin2 = stats.p2.winners - stats.p2.unforcedErrors;
-  statRow(t.aggressiveMargin, margin1, margin2, margin1, margin2);
+    // --- Return ---
+    sectionHeader(t.returnStats);
+    statRow(t.returnFirstServePointsWon, `${getReturnAnalytics(stats.p1, stats.p2).vsFirstServe}%`, `${getReturnAnalytics(stats.p2, stats.p1).vsFirstServe}%`);
+    statRow(t.returnSecondServePointsWon, `${getReturnAnalytics(stats.p1, stats.p2).vsSecondServe}%`, `${getReturnAnalytics(stats.p2, stats.p1).vsSecondServe}%`);
+    statRow(t.returnWinners, stats.p1.returnWinners, stats.p2.returnWinners, stats.p1.returnWinners, stats.p2.returnWinners);
+    statRow(t.breakPointsConverted, `${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`, `${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`, stats.p1.breakPointsWon, stats.p2.breakPointsWon);
+
+    // --- Efficiency ---
+    sectionHeader(t.efficiencyStats);
+    statRow(t.winners, stats.p1.winners, stats.p2.winners, stats.p1.winners, stats.p2.winners);
+    statRow(t.unforcedErrors, stats.p1.unforcedErrors, stats.p2.unforcedErrors, stats.p1.unforcedErrors, stats.p2.unforcedErrors, true);
+    statRow(t.forcedErrors, stats.p1.forcedErrors, stats.p2.forcedErrors, stats.p1.forcedErrors, stats.p2.forcedErrors);
+    const margin1 = stats.p1.winners - stats.p1.unforcedErrors;
+    const margin2 = stats.p2.winners - stats.p2.unforcedErrors;
+    statRow(t.aggressiveMargin, margin1, margin2, margin1, margin2);
+  }
 
   // --- By Player (doubles only) ---
   if (isDoubles && individualStats && teamPlayers) {
@@ -289,11 +268,24 @@ export function downloadMatchPdf(state: MatchState, lang: Language): void {
       doc.line(marginX, cursor.y, pageW - marginX, cursor.y);
       cursor.y += 6.5;
 
+      const sa = getServeAnalytics(a);
+      const sb = getServeAnalytics(b);
+      statRow(t.serviceEfficiency, `${sa.servicePointsWon}%`, `${sb.servicePointsWon}%`);
+      statRow(t.holdPercentage, `${sa.hold}%`, `${sb.hold}%`);
+      statRow(t.firstServeIn, `${sa.firstServeIn}%`, `${sb.firstServeIn}%`);
+      statRow(t.firstServePointsWon, `${sa.firstServePointsWon}%`, `${sb.firstServePointsWon}%`);
+      if (mode === 'advanced') {
+        statRow(t.secondServeIn, `${sa.secondServeIn}%`, `${sb.secondServeIn}%`);
+        statRow(t.secondServePointsWon, `${sa.secondServePointsWon}%`, `${sb.secondServePointsWon}%`);
+        statRow(t.aces, a.aces, b.aces, a.aces, b.aces);
+        statRow(t.acesPer100, sa.acesPer100, sb.acesPer100, sa.acesPer100, sb.acesPer100);
+        statRow(t.doubleFaults, a.doubleFaults, b.doubleFaults, a.doubleFaults, b.doubleFaults, true);
+        statRow(t.doubleFaultRate, `${sa.doubleFaultRate}%`, `${sb.doubleFaultRate}%`, sa.doubleFaultRate, sb.doubleFaultRate, true);
+        statRow(t.breakPointsSaved, `${a.breakPointsSaved}/${a.breakPointsFaced}`, `${b.breakPointsSaved}/${b.breakPointsFaced}`, a.breakPointsSaved, b.breakPointsSaved);
+      }
       statRow(t.winners, a.winners, b.winners, a.winners, b.winners);
       statRow(t.unforcedErrors, a.unforcedErrors, b.unforcedErrors, a.unforcedErrors, b.unforcedErrors, true);
-      statRow(t.forcedErrors, a.forcedErrors, b.forcedErrors, a.forcedErrors, b.forcedErrors, true);
-      statRow(t.aces, a.aces, b.aces, a.aces, b.aces);
-      statRow(t.doubleFaults, a.doubleFaults, b.doubleFaults, a.doubleFaults, b.doubleFaults, true);
+      statRow(t.forcedErrors, a.forcedErrors, b.forcedErrors, a.forcedErrors, b.forcedErrors);
       statRow(t.returnWinners, a.returnWinners, b.returnWinners, a.returnWinners, b.returnWinners);
     });
   }
@@ -315,38 +307,64 @@ export function downloadMatchPdf(state: MatchState, lang: Language): void {
     const descColW = contentW - timeColW - scoreColW - 4;
 
     journal.forEach((entry) => {
-      const isGameEnd = entry.score === '0-0';
+      const isGameEnd = !!entry.gameScore;
       const timeStr = entry.timestamp
-        ? new Date(entry.timestamp).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-          })
+        ? new Date(entry.timestamp).toLocaleTimeString(lang === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' })
         : '';
       const descLines = doc.splitTextToSize(entry.description, descColW);
-      const rowH = Math.max(descLines.length * 4.2, 5) + (isGameEnd ? 1.5 : 0.5);
-      ensureSpace(rowH + 1);
+      const rowH = Math.max(descLines.length * 4.2, 5);
+      ensureSpace(rowH + (isGameEnd ? 8 : 2));
 
       if (isGameEnd) {
+        cursor.y += 2;
         setDrawColorHex(RULE);
-        doc.setLineWidth(0.2);
-        doc.line(marginX, cursor.y - 2.6, pageW - marginX, cursor.y - 2.6);
+        doc.setLineWidth(0.25);
+        doc.line(marginX, cursor.y, pageW - marginX, cursor.y);
+        cursor.y += 3;
       }
 
       doc.setFont('DejaVuSans', 'normal');
       doc.setFontSize(7.5);
       setColor(MUTED);
-      doc.text(timeStr, marginX, cursor.y + 3);
+      doc.text(timeStr, marginX, cursor.y + 3.5);
 
       doc.setFont('DejaVuSans', isGameEnd ? 'bold' : 'normal');
       doc.setFontSize(8.5);
       setColor(INK);
-      doc.text(descLines, marginX + timeColW, cursor.y + 3);
+      doc.text(descLines, marginX + timeColW, cursor.y + 3.5);
 
-      doc.setFont('DejaVuSans', isGameEnd ? 'bold' : 'normal');
-      setColor(isGameEnd ? ACCENT : MUTED);
-      doc.text(entry.score, pageW - marginX, cursor.y + 3, { align: 'right' });
+      // Show the current point/game score on every journal row. Keep it black by default,
+      // highlighting only the numeric part(s) that changed from the previous entry.
+      doc.setFont('DejaVuSans', 'bold');
+      doc.setFontSize(8.5);
 
-      cursor.y += rowH;
+      const previousEntry = journal[journal.indexOf(entry) - 1];
+      const tokenizeScore = (value: string) => value.match(/\d+|[^\d]+/g) ?? [value];
+      const renderChangedScore = (value: string | undefined, previous: string | undefined, x: number, y: number) => {
+        if (!value) return;
+        const currentTokens = tokenizeScore(value);
+        const previousTokens = previous ? tokenizeScore(previous) : [];
+        const changed = currentTokens.map((token, i) => /^\d+$/.test(token) && previousTokens[i] !== token);
+        const scoreWidth = currentTokens.reduce((sum, token) => sum + doc.getTextWidth(token), 0);
+        let scoreX = x - scoreWidth;
+        currentTokens.forEach((token, i) => {
+          setColor(changed[i] ? ACCENT : INK);
+          doc.text(token, scoreX, y);
+          scoreX += doc.getTextWidth(token);
+        });
+      };
+
+      // Point score is always visible (15-0, 30-15, 40-30, AD-40, etc.).
+      renderChangedScore(entry.score, previousEntry?.score, pageW - marginX, cursor.y + 3.5);
+
+      // At the end of a game, show the cumulative set score underneath it. Do not
+      // show the redundant G score: the set score is the only match-level score here.
+      if (isGameEnd && entry.setScore) {
+        doc.setFontSize(7.2);
+        renderChangedScore(entry.setScore, previousEntry?.setScore, pageW - marginX, cursor.y + 7.5);
+      }
+
+      cursor.y += rowH + (isGameEnd ? 3 : 1);
     });
   }
 

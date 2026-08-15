@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:engine": "rm -rf tests/dist && tsc -p tests/tsconfig.json && node -e \"require('fs').writeFileSync('tests/dist/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node tests/dist/tests/tennisEngine.test.js"
   },
   "dependencies": {
     "react": "^19.2.3",

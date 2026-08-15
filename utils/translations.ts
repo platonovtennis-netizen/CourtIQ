@@ -6,6 +6,14 @@ export interface Translations {
   advanced: string;
   advantageRule: string;
   aggressiveMargin: string;
+  holdPercentage: string;
+  serviceGames: string;
+  serviceGamesWon: string;
+  firstServeFaults: string;
+  secondServeIn: string;
+  acesPer100: string;
+  doubleFaultRate: string;
+  serviceEfficiency: string;
   breakPoint: string;
   breakPointsConverted: string;
   breakPointsSaved: string;
@@ -87,6 +95,14 @@ const en: Translations = {
   advanced: 'Advanced',
   advantageRule: 'Advantage Rule',
   aggressiveMargin: 'Aggressive Margin',
+  holdPercentage: 'Hold %',
+  serviceGames: 'Service Games',
+  serviceGamesWon: 'Service Games Won',
+  firstServeFaults: '1st Serve Faults',
+  secondServeIn: '2nd Serve In',
+  acesPer100: 'Aces / 100 Serve Points',
+  doubleFaultRate: 'Double Fault Rate',
+  serviceEfficiency: 'Serve Efficiency',
   breakPoint: 'Break Point',
   breakPointsConverted: 'Break Points Converted',
   breakPointsSaved: 'Break Points Saved',
@@ -168,6 +184,14 @@ const ru: Translations = {
   advanced: 'Расширенный',
   advantageRule: 'Правило преимущества',
   aggressiveMargin: 'Агрессивный баланс',
+  holdPercentage: 'Удержание подачи %',
+  serviceGames: 'Геймы на подаче',
+  serviceGamesWon: 'Выиграно геймов на подаче',
+  firstServeFaults: 'Ошибки первой подачи',
+  secondServeIn: 'Вторая подача в поле',
+  acesPer100: 'Эйсы / 100 подач',
+  doubleFaultRate: 'Двойные ошибки %',
+  serviceEfficiency: 'Эффективность подачи',
   breakPoint: 'Брейк-пойнт',
   breakPointsConverted: 'Реализовано брейк-пойнтов',
   breakPointsSaved: 'Спасено брейк-пойнтов',

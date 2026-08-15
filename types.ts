@@ -13,6 +13,7 @@ export type PointScore = '0' | '15' | '30' | '40' | 'Ad';
 export interface SetScore {
   p1: number;
   p2: number;
+  type?: 'standard' | 'super-tiebreak';
   tiebreakPoints?: { p1: number; p2: number };
   winner?: PlayerId;
 }
@@ -48,12 +49,17 @@ export interface MatchStats {
   returnErrors: number;
   unforcedErrors: number;
   forcedErrors: number;
+  firstServeAttempts: number;
   firstServesIn: number;
+  firstServeFaults: number;
+  secondServesIn: number;
   firstServePointsWon: number;
   secondServePointsWon: number;
   secondServePointsTotal: number;
   servicePointsWon: number;
   servicePointsTotal: number;
+  serviceGamesPlayed: number;
+  serviceGamesWon: number;
   returnPointsWon: number;
   returnFirstServePointsWon: number;
   returnSecondServePointsWon: number;
@@ -86,15 +92,30 @@ export interface JournalEntry {
   score: string; 
   winner: PlayerId | 'none';
   type: ShotType;
-  setScore: string; 
+  setScore: string;
+  /** Completed game score, e.g. 1-0. Present only on the point that closes a game. */
+  gameScore?: string;
+}
+
+export interface PointEvent {
+  id: string;
+  timestamp: number;
+  action: PointAction;
+  language: Language;
 }
 
 export interface MatchState {
+  /** Persisted schema version. Increment when MatchState changes incompatibly. */
+  stateVersion: number;
   status: 'setup' | 'active' | 'finished';
   config: MatchConfig;
   players: { p1: string; p2: string };
   teamPlayers: TeamPlayers | null;
   server: PlayerId;
+  /** Current serving partner in doubles. Ignored for singles. */
+  serverSlot: TeamSlot | null;
+  /** First serving partner chosen by each team for the current set. */
+  doublesServerSlots: { p1: TeamSlot | null; p2: TeamSlot | null };
   isSecondServe: boolean; 
   broadcastId: string | null; 
   startTime: number | null;
@@ -108,7 +129,10 @@ export interface MatchState {
   tiebreakScore: { p1: number; p2: number };
   
   winner: PlayerId | null;
-  history: MatchState[]; 
+  /** Deprecated snapshot history. Kept only for migration of pre-v2 saved matches. */
+  history: MatchState[];
+  /** Compact event log used for replay/undo. New matches never store snapshots here. */
+  eventLog: PointEvent[];
   journal: JournalEntry[];
   
   stats: PlayerStats;

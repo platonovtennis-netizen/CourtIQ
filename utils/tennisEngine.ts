@@ -10,7 +10,9 @@ import {
   Language,
   JournalEntry,
   IndividualStats,
+  PointEvent,
   IndividualStatsKey,
+  TeamSlot,
 } from '../types';
 import { translations } from './translations';
 
@@ -34,12 +36,17 @@ export function emptyStats(): MatchStats {
     returnErrors: 0,
     unforcedErrors: 0,
     forcedErrors: 0,
+    firstServeAttempts: 0,
     firstServesIn: 0,
+    firstServeFaults: 0,
+    secondServesIn: 0,
     firstServePointsWon: 0,
     secondServePointsWon: 0,
     secondServePointsTotal: 0,
     servicePointsWon: 0,
     servicePointsTotal: 0,
+    serviceGamesPlayed: 0,
+    serviceGamesWon: 0,
     returnPointsWon: 0,
     returnFirstServePointsWon: 0,
     returnSecondServePointsWon: 0,
@@ -66,8 +73,11 @@ const defaultConfig: MatchConfig = {
   matchType: 'singles',
 };
 
+export const CURRENT_STATE_VERSION = 3;
+
 export function getInitialState(lang: Language): MatchState {
   return {
+    stateVersion: CURRENT_STATE_VERSION,
     status: 'setup',
     config: defaultConfig,
     players: {
@@ -76,6 +86,8 @@ export function getInitialState(lang: Language): MatchState {
     },
     teamPlayers: null,
     server: 'p1',
+    serverSlot: null,
+    doublesServerSlots: { p1: null, p2: null },
     isSecondServe: false,
     broadcastId: null,
     startTime: null,
@@ -87,6 +99,7 @@ export function getInitialState(lang: Language): MatchState {
     tiebreakScore: { p1: 0, p2: 0 },
     winner: null,
     history: [],
+    eventLog: [],
     journal: [],
     stats: { p1: emptyStats(), p2: emptyStats() },
     individualStats: null,
@@ -174,13 +187,88 @@ export function getPointStatus(state: MatchState): 'match-point' | 'set-point' |
   return null;
 }
 
+function normalizeStats(input: Partial<MatchStats> | undefined): MatchStats {
+  return {
+    ...emptyStats(),
+    ...(input ?? {}),
+    firstServeAttempts: input?.firstServeAttempts ?? input?.firstServesIn ?? 0,
+    firstServeFaults: input?.firstServeFaults ?? Math.max(0, (input?.firstServeAttempts ?? input?.firstServesIn ?? 0) - (input?.firstServesIn ?? 0)),
+    secondServesIn: input?.secondServesIn ?? Math.max(0, (input?.secondServePointsTotal ?? 0) - (input?.doubleFaults ?? 0)),
+    serviceGamesPlayed: input?.serviceGamesPlayed ?? 0,
+    serviceGamesWon: input?.serviceGamesWon ?? 0,
+  };
+}
+
+function normalizeIndividualStats(input: IndividualStats | null | undefined): IndividualStats | null {
+  if (!input) return null;
+  return {
+    p1a: normalizeStats(input.p1a),
+    p1b: normalizeStats(input.p1b),
+    p2a: normalizeStats(input.p2a),
+    p2b: normalizeStats(input.p2b),
+  };
+}
+
+export function migrateMatchState(input: MatchState): MatchState {
+  const state = input as MatchState & { stateVersion?: number; eventLog?: PointEvent[]; serverSlot?: TeamSlot | null };
+  const normalizedEvents = (state.eventLog ?? []).map((event) => ({
+    ...event,
+    language: event.language ?? 'en',
+  }));
+  return {
+    ...state,
+    stateVersion: CURRENT_STATE_VERSION,
+    eventLog: normalizedEvents,
+    serverSlot: state.serverSlot ?? null,
+    doublesServerSlots: state.doublesServerSlots ?? { p1: null, p2: null },
+    history: state.history ?? [],
+    stats: { p1: normalizeStats(state.stats?.p1), p2: normalizeStats(state.stats?.p2) },
+    individualStats: normalizeIndividualStats(state.individualStats),
+  };
+}
+
+function createReplayBase(state: MatchState): MatchState {
+  return {
+    ...state,
+    status: 'active',
+    stateVersion: CURRENT_STATE_VERSION,
+    server: state.config.initialServer ?? 'p1',
+    serverSlot: null,
+    doublesServerSlots: { p1: null, p2: null },
+    isSecondServe: false,
+    points: { p1: '0', p2: '0' },
+    rawPoints: { p1: 0, p2: 0 },
+    games: { p1: 0, p2: 0 },
+    sets: [{ p1: 0, p2: 0 }],
+    isTiebreak: false,
+    tiebreakScore: { p1: 0, p2: 0 },
+    winner: null,
+    history: [],
+    eventLog: [],
+    journal: [],
+    stats: { p1: emptyStats(), p2: emptyStats() },
+    individualStats: state.individualStats ? createIndividualStats() : null,
+  };
+}
+
 export function undoLastPoint(state: MatchState): MatchState {
-  if (state.history.length === 0) return state;
-  const idx = state.history.length - 1;
-  const previous = state.history[idx];
-  // The stored snapshot has history stripped (see processPoint) — reattach everything that
-  // came before it, which is simply the earlier portion of the current live history array.
-  return { ...previous, history: state.history.slice(0, idx) };
+  const current = migrateMatchState(state);
+  if (current.eventLog.length > 0) {
+    const remaining = current.eventLog.slice(0, -1);
+    let replayed = createReplayBase(current);
+    for (const event of remaining) {
+      replayed = processPointInternal(replayed, event.action, event.language, false);
+    }
+    return { ...replayed, eventLog: remaining, broadcastId: current.broadcastId, startTime: current.startTime };
+  }
+
+  // Backward-compatible undo for a v1 state that was loaded before migration.
+  if (current.history.length > 0) {
+    const idx = current.history.length - 1;
+    const previous = current.history[idx];
+    return { ...previous, stateVersion: CURRENT_STATE_VERSION, eventLog: [], history: current.history.slice(0, idx), serverSlot: previous.serverSlot ?? null, doublesServerSlots: previous.doublesServerSlots ?? { p1: null, p2: null } };
+  }
+  return current;
 }
 
 const shotLabelKey: Partial<Record<ShotType, keyof typeof translations['en']>> = {
@@ -206,7 +294,29 @@ const counterFieldForType: Partial<Record<ShotType, CounterField>> = {
   'return-error': 'returnErrors',
 };
 
+function makePointEvent(action: PointAction, language: Language): PointEvent {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: Date.now(),
+    action: { ...action },
+    language,
+  };
+}
+
+export function selectDoublesServer(state: MatchState, slot: TeamSlot): MatchState {
+  if (state.config.matchType !== 'doubles' || state.status !== 'active' || state.winner) return state;
+  return {
+    ...state,
+    serverSlot: slot,
+    doublesServerSlots: { ...state.doublesServerSlots, [state.server]: slot },
+  };
+}
+
 export function processPoint(state: MatchState, action: PointAction, lang: Language): MatchState {
+  return processPointInternal(migrateMatchState(state), action, lang, true);
+}
+
+function processPointInternal(state: MatchState, action: PointAction, lang: Language, recordEvent = true): MatchState {
   if (state.winner || state.status !== 'active') return state;
 
   // IMPORTANT: the stored snapshot must NOT carry its own `history` field, otherwise every
@@ -214,29 +324,60 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
   // and so on), and the state doubles in size every single point — a match of even 20 points
   // would produce a >100MB state and hang JSON.stringify (used by "Download JSON" and by the
   // Firebase broadcast sync). undoLastPoint() below reattaches the correct history slice instead.
-  const snapshot: MatchState = { ...state, history: [] };
+  const currentState = migrateMatchState(state);
+  state = currentState;
   const t = translations[lang];
+
+  // --- Resolve serving side / partner before recording the point ---
+  const server = state.server;
+  const returner = opponentOf(server);
+  const wasSecondServe = state.isSecondServe;
+
+  // In doubles the first serving partner of a team is chosen once per set.
+  // All subsequent service points use the stored serverSlot automatically.
+  if (state.config.matchType === 'doubles' && !state.serverSlot) {
+    const selectedSlot = action.actorSlot;
+    if (!selectedSlot) return state;
+    state = {
+      ...state,
+      serverSlot: selectedSlot,
+      doublesServerSlots: { ...state.doublesServerSlots, [server]: selectedSlot },
+    };
+  }
 
   // --- Determine the real actor and real point winner, resolving the fault/double-fault case ---
   const isErrorByActor = action.type === 'unforced-error' || action.type === 'forced-error' || action.type === 'return-error';
-  const actorId: PlayerId = isErrorByActor ? opponentOf(action.winner) : action.winner;
+  const actorId: PlayerId = (action.type === 'ace' || action.type === 'fault' || action.type === 'double-fault')
+    ? server
+    : (isErrorByActor ? opponentOf(action.winner) : action.winner);
 
   let type: ShotType = action.type;
   let pointWinner: PlayerId = action.winner;
 
   if (type === 'fault') {
     if (!state.isSecondServe) {
-      // First-serve fault: no point is decided yet, just move to second serve.
-      return { ...state, isSecondServe: true, history: [...state.history, snapshot] };
+      // First-serve fault: it is an attempted first serve, but not a service point.
+      // Keep the event in the log while moving to the second serve.
+      const nextStats = { p1: { ...state.stats.p1 }, p2: { ...state.stats.p2 } };
+      nextStats[server].firstServeAttempts += 1;
+      nextStats[server].firstServeFaults += 1;
+      let nextIndividual = state.individualStats ? { ...state.individualStats } : null;
+      const key = state.config.matchType === 'doubles' && state.serverSlot ? `${server}${state.serverSlot}` as IndividualStatsKey : null;
+      if (nextIndividual && key) nextIndividual = { ...nextIndividual, [key]: { ...nextIndividual[key], firstServeAttempts: nextIndividual[key].firstServeAttempts + 1, firstServeFaults: nextIndividual[key].firstServeFaults + 1 } };
+      return {
+        ...state,
+        stats: nextStats,
+        individualStats: nextIndividual,
+        isSecondServe: true,
+        eventLog: recordEvent
+          ? [...state.eventLog, makePointEvent({ ...action, actorSlot: state.config.matchType === 'doubles' ? state.serverSlot ?? action.actorSlot : action.actorSlot }, lang)]
+          : state.eventLog,
+      };
     }
     // Second fault in a row = double fault, the returner wins the point outright.
     type = 'double-fault';
     pointWinner = opponentOf(actorId);
   }
-
-  const server = state.server;
-  const returner = opponentOf(server);
-  const wasSecondServe = state.isSecondServe;
 
   const p1Stats: MatchStats = { ...state.stats.p1 };
   const p2Stats: MatchStats = { ...state.stats.p2 };
@@ -244,25 +385,60 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
 
   const serverStats = statsFor(server);
   const returnerStats = statsFor(returner);
+  const resolvedActorSlot = state.config.matchType === 'doubles' && actorId === server ? state.serverSlot ?? undefined : action.actorSlot;
+  const resolvedAction: PointAction = resolvedActorSlot ? { ...action, actorSlot: resolvedActorSlot } : { ...action };
+  let individualStats: IndividualStats | null = state.individualStats ? { ...state.individualStats } : null;
+  const serverIndividualKey = state.config.matchType === 'doubles' && state.serverSlot
+    ? `${server}${state.serverSlot}` as IndividualStatsKey
+    : null;
+  const returnerIndividualKey = state.config.matchType === 'doubles' && action.actorSlot && actorId === returner
+    ? `${returner}${action.actorSlot}` as IndividualStatsKey
+    : null;
+  if (individualStats && serverIndividualKey) individualStats = { ...individualStats, [serverIndividualKey]: { ...individualStats[serverIndividualKey] } };
+  if (individualStats && returnerIndividualKey && returnerIndividualKey !== serverIndividualKey) individualStats = { ...individualStats, [returnerIndividualKey]: { ...individualStats[returnerIndividualKey] } };
+  const serverIndividual = individualStats && serverIndividualKey ? individualStats[serverIndividualKey] : null;
+  const returnerIndividual = individualStats && returnerIndividualKey ? individualStats[returnerIndividualKey] : null;
 
-  // --- Serve totals (every resolved point is either a 1st-serve or 2nd-serve point) ---
+  // --- Serve totals ---
+  // A first-serve percentage must use ALL first-serve attempts as its denominator,
+  // including first-serve faults. servicePointsTotal counts resolved points only.
+  if (!wasSecondServe) {
+    serverStats.firstServeAttempts += 1;
+    serverStats.firstServesIn += 1;
+    if (serverIndividual) {
+      serverIndividual.firstServeAttempts += 1;
+      serverIndividual.firstServesIn += 1;
+    }
+  } else {
+    serverStats.secondServePointsTotal += 1;
+    if (type !== 'double-fault') {
+      serverStats.secondServesIn += 1;
+    }
+    if (serverIndividual) {
+      serverIndividual.secondServePointsTotal += 1;
+      if (type !== 'double-fault') serverIndividual.secondServesIn += 1;
+    }
+  }
+
+  // --- Serve totals (every resolved point is a service point) ---
   serverStats.servicePointsTotal += 1;
-  if (!wasSecondServe) serverStats.firstServesIn += 1;
-  else serverStats.secondServePointsTotal += 1;
+  if (serverIndividual) serverIndividual.servicePointsTotal += 1;
 
   // --- Shot-type specific counters (team-level, always) + per-partner counters (doubles only) ---
-  let individualStats: IndividualStats | null = state.individualStats ? { ...state.individualStats } : null;
   const counterField = counterFieldForType[type];
   if (counterField) {
     statsFor(actorId)[counterField] += 1;
-    if (individualStats && action.actorSlot) {
-      const key = `${actorId}${action.actorSlot}` as IndividualStatsKey;
+    if (individualStats && resolvedActorSlot) {
+      const key = `${actorId}${resolvedActorSlot}` as IndividualStatsKey;
       individualStats = {
         ...individualStats,
         [key]: { ...individualStats[key], [counterField]: individualStats[key][counterField] + 1 },
       };
     }
   }
+
+  const currentServerIndividual = individualStats && serverIndividualKey ? individualStats[serverIndividualKey] : null;
+  const currentReturnerIndividual = individualStats && returnerIndividualKey ? individualStats[returnerIndividualKey] : null;
 
   // --- Break point detection (tracked only in regular games, not tiebreaks) ---
   if (!state.isTiebreak) {
@@ -283,10 +459,22 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
     serverStats.servicePointsWon += 1;
     if (!wasSecondServe) serverStats.firstServePointsWon += 1;
     else serverStats.secondServePointsWon += 1;
+    if (currentServerIndividual) {
+      currentServerIndividual.servicePointsWon += 1;
+      if (!wasSecondServe) currentServerIndividual.firstServePointsWon += 1;
+      else currentServerIndividual.secondServePointsWon += 1;
+      currentServerIndividual.totalPointsWon += 1;
+    }
   } else {
     returnerStats.returnPointsWon += 1;
     if (!wasSecondServe) returnerStats.returnFirstServePointsWon += 1;
     else returnerStats.returnSecondServePointsWon += 1;
+    if (currentReturnerIndividual) {
+      currentReturnerIndividual.returnPointsWon += 1;
+      if (!wasSecondServe) currentReturnerIndividual.returnFirstServePointsWon += 1;
+      else currentReturnerIndividual.returnSecondServePointsWon += 1;
+      currentReturnerIndividual.totalPointsWon += 1;
+    }
   }
   statsFor(pointWinner).totalPointsWon += 1;
 
@@ -297,6 +485,8 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
   let sets: SetScore[] = state.sets.map((s) => ({ ...s }));
   let isTiebreak = state.isTiebreak;
   let server_ = state.server;
+  let serverSlot_ = state.serverSlot;
+  let doublesServerSlots_ = { ...state.doublesServerSlots };
 
   const currentSetIndex = sets.length - 1;
   const isDeciderSet = currentSetIndex === state.config.totalSetsMode - 1;
@@ -314,9 +504,20 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
     const l = tiebreakScore[opponentOf(pointWinner)];
     gameWon = w >= target && w - l >= 2;
 
-    // Tiebreak server rotation: first point continues the existing server, then alternates every 2 points.
+    // Tiebreak server rotation: first point is served by the player who started the
+    // tiebreak; thereafter the other side serves two points, alternating every two.
     const totalTB = tiebreakScore.p1 + tiebreakScore.p2;
-    server_ = totalTB % 2 === 1 ? opponentOf(server_) : server_;
+    if (totalTB === 1) {
+      server_ = opponentOf(server_);
+      if (state.config.matchType === 'doubles') serverSlot_ = doublesServerSlots_[server_] ?? null;
+    } else if (totalTB % 2 === 1) {
+      server_ = opponentOf(server_);
+      if (state.config.matchType === 'doubles') {
+        const firstSlot = doublesServerSlots_[server_];
+        serverSlot_ = firstSlot ? (firstSlot === 'a' ? 'b' : 'a') : null;
+        if (firstSlot) doublesServerSlots_[server_] = serverSlot_;
+      }
+    }
   } else {
     rawPoints = { ...rawPoints, [pointWinner]: rawPoints[pointWinner] + 1 };
     const noAd = state.config.advantage === 'no-ad';
@@ -329,7 +530,7 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
     if (isTiebreak) {
       setWon = true;
       if (isSuperTB) {
-        sets[currentSetIndex] = { p1: tiebreakScore.p1, p2: tiebreakScore.p2, winner: pointWinner };
+        sets[currentSetIndex] = { p1: tiebreakScore.p1, p2: tiebreakScore.p2, type: 'super-tiebreak', winner: pointWinner };
         games = { p1: sets[currentSetIndex].p1, p2: sets[currentSetIndex].p2 };
       } else {
         const winnerGames = games[pointWinner] + 1;
@@ -358,8 +559,24 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
         isTiebreak = true;
         tiebreakScore = { p1: 0, p2: 0 };
       }
-      // Server alternates after every completed game, including the one that starts a tiebreak.
+      // Record completed service-game efficiency for the team and, when known, the
+      // individual server. Tiebreaks are not service games.
+      serverStats.serviceGamesPlayed += 1;
+      if (pointWinner === server) serverStats.serviceGamesWon += 1;
+      if (currentServerIndividual) {
+        currentServerIndividual.serviceGamesPlayed += 1;
+        if (pointWinner === server) currentServerIndividual.serviceGamesWon += 1;
+      }
+
+      // Server alternates after every completed game. In doubles, the first
+      // serving partner is chosen once per team per set; that team then alternates
+      // partners on each later service game. At a new set the choices are reset.
       server_ = opponentOf(server_);
+      if (state.config.matchType === 'doubles') {
+        const firstSlot = doublesServerSlots_[server_];
+        serverSlot_ = firstSlot ? (firstSlot === 'a' ? 'b' : 'a') : null;
+        if (firstSlot) doublesServerSlots_[server_] = serverSlot_;
+      }
     }
 
     rawPoints = { p1: 0, p2: 0 };
@@ -378,6 +595,10 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
       isTiebreak = nextIsSuperTB;
       tiebreakScore = { p1: 0, p2: 0 };
       rawPoints = { p1: 0, p2: 0 };
+      if (state.config.matchType === 'doubles') {
+        doublesServerSlots_ = { p1: null, p2: null };
+        serverSlot_ = null;
+      }
     }
   }
 
@@ -399,12 +620,10 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
       : `${actorDisplayName} — ${shotKey ? t[shotKey] : type}`;
 
   const scoreStr = isTiebreak && !gameWon ? `${tiebreakScore.p1}-${tiebreakScore.p2}` : `${points.p1}-${points.p2}`;
-  const setScoreStr =
-    sets
-      .filter((s) => s.winner || s.p1 > 0 || s.p2 > 0)
-      .map((s) => `${s.p1}-${s.p2}`)
-      .join(', ') || '0-0';
+  // The journal carries the full set scoreboard, including a newly started 0-0 set.
+  const setScoreStr = sets.map((s) => `${s.p1}-${s.p2}`).join(', ') || '0-0';
 
+  const gameScore = gameWon && !isSuperTB ? `${games.p1}-${games.p2}` : undefined;
   const journalEntry: JournalEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     timestamp: Date.now(),
@@ -413,11 +632,14 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
     winner: pointWinner,
     type,
     setScore: setScoreStr,
+    ...(gameScore ? { gameScore } : {}),
   };
 
   return {
     ...state,
     server: server_,
+    serverSlot: serverSlot_,
+    doublesServerSlots: doublesServerSlots_,
     isSecondServe: false,
     points,
     rawPoints,
@@ -430,6 +652,7 @@ export function processPoint(state: MatchState, action: PointAction, lang: Langu
     stats: { p1: p1Stats, p2: p2Stats },
     individualStats,
     journal: [...state.journal, journalEntry],
-    history: [...state.history, snapshot],
+    eventLog: recordEvent ? [...state.eventLog, makePointEvent(resolvedAction, lang)] : state.eventLog,
+    history: state.history,
   };
 }

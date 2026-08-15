@@ -6,12 +6,14 @@ import { RotateCcw, BarChart2, Activity, List, Trophy, LogOut, Download, Zap, Al
 import { translations } from '../utils/translations';
 import { downloadMatchJson } from '../utils/exportUtils';
 import { downloadMatchPdf } from '../utils/pdfExport';
+import { getServeAnalytics, getReturnAnalytics } from '../utils/analytics';
 import { toPng } from 'html-to-image';
 
 interface MatchInterfaceProps {
   state: MatchState;
   lang: Language;
   onPoint: (action: PointAction) => void;
+  onSelectDoublesServer: (slot: TeamSlot) => void;
   onUndo: () => void;
   onEndMatch: () => void;
   onShowStats: () => void;
@@ -34,7 +36,7 @@ const TabButton = ({ active, label, onClick, icon: Icon }: any) => (
   </button>
 );
 
-export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onPoint, onUndo, onEndMatch, onToggleLang, onBroadcast, readOnly = false }) => {
+export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onPoint, onSelectDoublesServer, onUndo, onEndMatch, onToggleLang, onBroadcast, readOnly = false }) => {
   // If readOnly, start on 'stats' tab
   const [activeTab, setActiveTab] = useState<'control' | 'stats' | 'journal'>(readOnly ? 'stats' : 'control');
   const [mode, setMode] = useState<'advanced' | 'simple'>('advanced');
@@ -69,13 +71,21 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
     if (type === 'fault') {
       winnerId = actorId; 
     }
-    onPoint({ winner: winnerId, type, actorSlot: slot });
+    const resolvedSlot = isDoubles && actorId === server && (type === 'ace' || type === 'fault') ? (state.serverSlot ?? undefined) : slot;
+    onPoint({ winner: winnerId, type, actorSlot: resolvedSlot });
   };
 
   // Used by the Advanced-mode shot buttons: in doubles, ask which partner hit it first;
   // in singles, record the point immediately exactly as before.
   const requestAction = (actorId: PlayerId, type: ShotType) => {
     if (readOnly) return;
+    const isServingAction = actorId === server && (type === 'ace' || type === 'fault');
+    if (isDoubles && isServingAction) {
+      // The serving partner is selected once before the service game. Never ask
+      // who served for an ace/fault after the shot is recorded.
+      handleAction(actorId, type, state.serverSlot ?? undefined);
+      return;
+    }
     if (isDoubles) {
       setPendingAction({ actorId, type });
     } else {
@@ -93,6 +103,8 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
     if (total === 0) return 0;
     return Math.round((num / total) * 100);
   };
+  const serveAnalytics = (s: MatchStats) => getServeAnalytics(s);
+  const returnAnalytics = (s: MatchStats, opponentServe: MatchStats) => getReturnAnalytics(s, opponentServe);
 
   const getDuration = () => {
     if (!startTime) return '0h 00m';
@@ -138,7 +150,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
 
   const exportPdf = () => {
     try {
-      downloadMatchPdf(state, lang);
+      downloadMatchPdf(state, lang, mode);
     } catch (err) {
       console.error('Error exporting PDF:', err);
       alert(lang === 'ru' ? 'Ошибка при создании PDF. Попробуйте еще раз.' : 'Error creating PDF. Please try again.');
@@ -283,6 +295,26 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 overflow-hidden">
+      {isDoubles && !readOnly && !winner && !state.serverSlot && teamPlayers && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl p-6 w-full max-w-xs shadow-2xl">
+            <div className="text-center text-slate-300 text-sm font-black uppercase tracking-widest mb-2">{t.serving}</div>
+            <div className="text-center text-slate-500 text-xs mb-5">{players[server]}</div>
+            <div className="flex flex-col gap-3">
+              {teamPlayers[server].map((name, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => onSelectDoublesServer(idx === 0 ? 'a' : 'b')}
+                  className="w-full bg-slate-800 hover:bg-tennis-green hover:text-black text-white font-bold py-3.5 rounded-2xl transition-all active:scale-[0.98] text-sm md:text-base"
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {pendingAction && teamPlayers && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
@@ -415,8 +447,31 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                         <ChevronRight className="w-3 h-3 md:w-3.5 md:h-3.5 text-slate-500" />
                         <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">{t.returnStats}</h3>
                       </div>
-                      <StatRowUI label={t.pointsWonOnReturn} p1Val={getPercentage(stats.p1.returnPointsWon, stats.p2.servicePointsTotal)} p2Val={getPercentage(stats.p2.returnPointsWon, stats.p1.servicePointsTotal)} format="percent" />
+                      <StatRowUI label={t.pointsWonOnReturn} p1Val={returnAnalytics(stats.p1, stats.p2).pointsWon} p2Val={returnAnalytics(stats.p2, stats.p1).pointsWon} format="percent" />
                       <StatRowUI label={t.breakPointsConverted} p1Val={`${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`} p2Val={`${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`} p1Count={stats.p1.breakPointsWon} p2Count={stats.p2.breakPointsWon} />
+
+                      {isDoubles && individualStats && teamPlayers && (
+                        <>
+                          <div className="flex items-center gap-2 pt-4 md:pt-6 pb-1 border-b border-white/5 mb-0.5 md:mb-1">
+                            <Users className="w-3 h-3 md:w-3.5 md:h-3.5 text-slate-500" />
+                            <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">{t.serviceEfficiency}</h3>
+                          </div>
+                          {(['p1', 'p2'] as const).map((side) => {
+                            const [nameA, nameB] = teamPlayers[side];
+                            const a = serveAnalytics(individualStats[`${side}a`]);
+                            const b = serveAnalytics(individualStats[`${side}b`]);
+                            return (
+                              <React.Fragment key={side}>
+                                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest pt-2">{nameA} / {nameB}</div>
+                                <StatRowUI label={t.pointsWonOnServe} p1Val={a.servicePointsWon} p2Val={b.servicePointsWon} format="percent" />
+                                <StatRowUI label={t.holdPercentage} p1Val={a.hold} p2Val={b.hold} format="percent" />
+                                <StatRowUI label={t.firstServeIn} p1Val={a.firstServeIn} p2Val={b.firstServeIn} format="percent" />
+                                <StatRowUI label={t.firstServePointsWon} p1Val={a.firstServePointsWon} p2Val={b.firstServePointsWon} format="percent" />
+                              </React.Fragment>
+                            );
+                          })}
+                        </>
+                      )}
                     </>
                  )}
 
@@ -429,10 +484,15 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                        <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">{t.serviceStats}</h3>
                      </div>
                      <StatRowUI label={t.aces} p1Val={stats.p1.aces} p2Val={stats.p2.aces} />
+                     <StatRowUI label={t.acesPer100} p1Val={serveAnalytics(stats.p1).acesPer100} p2Val={serveAnalytics(stats.p2).acesPer100} />
                      <StatRowUI label={t.doubleFaults} p1Val={stats.p1.doubleFaults} p2Val={stats.p2.doubleFaults} lowerIsBetter />
-                     <StatRowUI label={t.firstServeIn} p1Val={getPercentage(stats.p1.firstServesIn, stats.p1.servicePointsTotal)} p2Val={getPercentage(stats.p2.firstServesIn, stats.p2.servicePointsTotal)} format="percent" />
-                     <StatRowUI label={t.firstServePointsWon} p1Val={getPercentage(stats.p1.firstServePointsWon, stats.p1.firstServesIn)} p2Val={getPercentage(stats.p2.firstServePointsWon, stats.p1.firstServesIn)} format="percent" />
-                     <StatRowUI label={t.secondServePointsWon} p1Val={getPercentage(stats.p1.secondServePointsWon, stats.p1.secondServePointsTotal)} p2Val={getPercentage(stats.p2.secondServePointsWon, stats.p2.secondServePointsTotal)} format="percent" />
+                     <StatRowUI label={t.doubleFaultRate} p1Val={serveAnalytics(stats.p1).doubleFaultRate} p2Val={serveAnalytics(stats.p2).doubleFaultRate} format="percent" lowerIsBetter />
+                     <StatRowUI label={t.pointsWonOnServe} p1Val={serveAnalytics(stats.p1).servicePointsWon} p2Val={serveAnalytics(stats.p2).servicePointsWon} format="percent" />
+                     <StatRowUI label={t.holdPercentage} p1Val={serveAnalytics(stats.p1).hold} p2Val={serveAnalytics(stats.p2).hold} format="percent" />
+                     <StatRowUI label={t.firstServeIn} p1Val={serveAnalytics(stats.p1).firstServeIn} p2Val={serveAnalytics(stats.p2).firstServeIn} format="percent" />
+                     <StatRowUI label={t.firstServePointsWon} p1Val={serveAnalytics(stats.p1).firstServePointsWon} p2Val={serveAnalytics(stats.p2).firstServePointsWon} format="percent" />
+                     <StatRowUI label={t.secondServeIn} p1Val={serveAnalytics(stats.p1).secondServeIn} p2Val={serveAnalytics(stats.p2).secondServeIn} format="percent" />
+                     <StatRowUI label={t.secondServePointsWon} p1Val={serveAnalytics(stats.p1).secondServePointsWon} p2Val={serveAnalytics(stats.p2).secondServePointsWon} format="percent" />
                      <StatRowUI label={t.breakPointsSaved} p1Val={`${stats.p1.breakPointsSaved}/${stats.p1.breakPointsFaced}`} p2Val={`${stats.p2.breakPointsSaved}/${stats.p2.breakPointsFaced}`} p1Count={stats.p1.breakPointsSaved} p2Count={stats.p2.breakPointsSaved} />
 
                      {/* Return Section */}
@@ -440,8 +500,9 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                        <ChevronRight className="w-3 h-3 md:w-3.5 md:h-3.5 text-slate-500" />
                        <h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">{t.returnStats}</h3>
                      </div>
-                     <StatRowUI label={t.returnFirstServePointsWon} p1Val={getPercentage(stats.p1.returnFirstServePointsWon, stats.p2.firstServesIn)} p2Val={getPercentage(stats.p2.returnFirstServePointsWon, stats.p1.firstServesIn)} format="percent" />
-                     <StatRowUI label={t.returnSecondServePointsWon} p1Val={getPercentage(stats.p1.returnSecondServePointsWon, stats.p2.secondServePointsTotal)} p2Val={getPercentage(stats.p2.returnSecondServePointsWon, stats.p1.secondServePointsTotal)} format="percent" />
+                     <StatRowUI label={t.pointsWonOnReturn} p1Val={returnAnalytics(stats.p1, stats.p2).pointsWon} p2Val={returnAnalytics(stats.p2, stats.p1).pointsWon} format="percent" />
+                     <StatRowUI label={t.returnFirstServePointsWon} p1Val={returnAnalytics(stats.p1, stats.p2).vsFirstServe} p2Val={returnAnalytics(stats.p2, stats.p1).vsFirstServe} format="percent" />
+                     <StatRowUI label={t.returnSecondServePointsWon} p1Val={returnAnalytics(stats.p1, stats.p2).vsSecondServe} p2Val={returnAnalytics(stats.p2, stats.p1).vsSecondServe} format="percent" />
                      <StatRowUI label={t.returnWinners} p1Val={stats.p1.returnWinners} p2Val={stats.p2.returnWinners} />
                      <StatRowUI label={t.breakPointsConverted} p1Val={`${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`} p2Val={`${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`} p1Count={stats.p1.breakPointsWon} p2Count={stats.p2.breakPointsWon} />
 
@@ -452,7 +513,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                      </div>
                      <StatRowUI label={t.winners} p1Val={stats.p1.winners} p2Val={stats.p2.winners} />
                      <StatRowUI label={t.unforcedErrors} p1Val={stats.p1.unforcedErrors} p2Val={stats.p2.unforcedErrors} lowerIsBetter />
-                     <StatRowUI label={t.forcedErrors} p1Val={stats.p1.forcedErrors} p2Val={stats.p2.forcedErrors} lowerIsBetter />
+                     <StatRowUI label={t.forcedErrors} p1Val={stats.p1.forcedErrors} p2Val={stats.p2.forcedErrors} />
                      <StatRowUI label={t.aggressiveMargin} p1Val={stats.p1.winners - stats.p1.unforcedErrors} p2Val={stats.p2.winners - stats.p2.unforcedErrors} />
 
                      {/* By Player (doubles only): who in each pair wins/errs more */}
@@ -462,6 +523,8 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                            const [nameA, nameB] = teamPlayers[side];
                            const a = individualStats[`${side}a`];
                            const b = individualStats[`${side}b`];
+                           const sa = serveAnalytics(a);
+                           const sb = serveAnalytics(b);
                            return (
                              <React.Fragment key={side}>
                                <div id={side === 'p1' ? 'sec-by-player' : undefined} className="flex items-center gap-2 pt-4 md:pt-6 pb-1 border-b border-white/5 mb-0.5 md:mb-1 scroll-mt-4">
@@ -470,11 +533,20 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                                    {t.byPlayer}: {nameA} vs {nameB}
                                  </h3>
                                </div>
+                               <StatRowUI label={t.serviceEfficiency} p1Val={sa.servicePointsWon} p2Val={sb.servicePointsWon} format="percent" />
+                               <StatRowUI label={t.holdPercentage} p1Val={sa.hold} p2Val={sb.hold} format="percent" />
+                               <StatRowUI label={t.firstServeIn} p1Val={sa.firstServeIn} p2Val={sb.firstServeIn} format="percent" />
+                               <StatRowUI label={t.firstServePointsWon} p1Val={sa.firstServePointsWon} p2Val={sb.firstServePointsWon} format="percent" />
+                               <StatRowUI label={t.secondServePointsWon} p1Val={sa.secondServePointsWon} p2Val={sb.secondServePointsWon} format="percent" />
+                               <StatRowUI label={t.secondServeIn} p1Val={sa.secondServeIn} p2Val={sb.secondServeIn} format="percent" />
+                               <StatRowUI label={t.aces} p1Val={a.aces} p2Val={b.aces} />
+                               <StatRowUI label={t.acesPer100} p1Val={sa.acesPer100} p2Val={sb.acesPer100} />
+                               <StatRowUI label={t.doubleFaults} p1Val={a.doubleFaults} p2Val={b.doubleFaults} lowerIsBetter />
+                               <StatRowUI label={t.doubleFaultRate} p1Val={sa.doubleFaultRate} p2Val={sb.doubleFaultRate} format="percent" lowerIsBetter />
+                               <StatRowUI label={t.breakPointsSaved} p1Val={`${a.breakPointsSaved}/${a.breakPointsFaced}`} p2Val={`${b.breakPointsSaved}/${b.breakPointsFaced}`} p1Count={a.breakPointsSaved} p2Count={b.breakPointsSaved} />
                                <StatRowUI label={t.winners} p1Val={a.winners} p2Val={b.winners} />
                                <StatRowUI label={t.unforcedErrors} p1Val={a.unforcedErrors} p2Val={b.unforcedErrors} lowerIsBetter />
-                               <StatRowUI label={t.forcedErrors} p1Val={a.forcedErrors} p2Val={b.forcedErrors} lowerIsBetter />
-                               <StatRowUI label={t.aces} p1Val={a.aces} p2Val={b.aces} />
-                               <StatRowUI label={t.doubleFaults} p1Val={a.doubleFaults} p2Val={b.doubleFaults} lowerIsBetter />
+                               <StatRowUI label={t.forcedErrors} p1Val={a.forcedErrors} p2Val={b.forcedErrors} />
                                <StatRowUI label={t.returnWinners} p1Val={a.returnWinners} p2Val={b.returnWinners} />
                                <StatRowUI label={t.returnError} p1Val={a.returnErrors} p2Val={b.returnErrors} lowerIsBetter />
                              </React.Fragment>
@@ -496,7 +568,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
             <div className="max-w-3xl mx-auto p-4 space-y-4">
               {journal.map((entry) => {
                 const style = getJournalStyle(entry.type);
-                const isGameEnd = entry.score === '0-0';
+                const isGameEnd = !!entry.gameScore;
                 return (
                   <div key={entry.id} className={`bg-slate-900/50 border border-white/5 rounded-2xl p-4 flex items-center gap-4 transition-all ${isGameEnd ? 'ring-1 ring-tennis-green/30' : ''}`}>
                     <div className="bg-slate-800 p-2 rounded-xl"><style.icon className={`w-5 h-5 ${style.color}`} /></div>
@@ -504,7 +576,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                       <div className={`text-sm font-bold truncate ${style.color}`}>{entry.description}</div>
                       <div className="text-[10px] font-black tracking-widest uppercase text-slate-500 mt-1">{entry.setScore}</div>
                     </div>
-                    <div className={`font-mono font-black text-xl tracking-tighter ${isGameEnd ? 'text-white' : 'text-tennis-green'}`}>{entry.score}</div>
+                    <div className={`font-mono font-black text-xl tracking-tighter ${isGameEnd ? 'text-white' : 'text-tennis-green'}`}>{entry.gameScore ?? entry.score}</div>
                   </div>
                 );
               })}
@@ -574,7 +646,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                      <>
                         <ExportItem label={t.aces} p1Val={stats.p1.aces} p2Val={stats.p2.aces} />
                         <ExportItem label={t.doubleFaults} p1Val={stats.p1.doubleFaults} p2Val={stats.p2.doubleFaults} lowerIsBetter />
-                        <ExportItem label={t.firstServeIn} p1Val={getPercentage(stats.p1.firstServesIn, stats.p1.servicePointsTotal)} p2Val={getPercentage(stats.p2.firstServesIn, stats.p2.servicePointsTotal)} format="percent" />
+                        <ExportItem label={t.firstServeIn} p1Val={serveAnalytics(stats.p1).firstServeIn} p2Val={serveAnalytics(stats.p2).firstServeIn} format="percent" />
                         <ExportItem label={t.firstServePointsWon} p1Val={getPercentage(stats.p1.firstServePointsWon, stats.p1.firstServesIn)} p2Val={getPercentage(stats.p2.firstServePointsWon, stats.p2.firstServesIn)} format="percent" />
                         <ExportItem label={t.secondServePointsWon} p1Val={getPercentage(stats.p1.secondServePointsWon, stats.p1.secondServePointsTotal)} p2Val={getPercentage(stats.p2.secondServePointsWon, stats.p2.secondServePointsTotal)} format="percent" />
                         <ExportItem label={t.breakPointsSaved} p1Val={`${stats.p1.breakPointsSaved}/${stats.p1.breakPointsFaced}`} p2Val={`${stats.p2.breakPointsSaved}/${stats.p2.breakPointsFaced}`} p1Count={stats.p1.breakPointsSaved} p2Count={stats.p2.breakPointsSaved} />
@@ -598,7 +670,7 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                      <>
                         <ExportItem label={t.winners} p1Val={stats.p1.winners} p2Val={stats.p2.winners} />
                         <ExportItem label={t.unforcedErrors} p1Val={stats.p1.unforcedErrors} p2Val={stats.p2.unforcedErrors} lowerIsBetter />
-                        <ExportItem label={t.forcedErrors} p1Val={stats.p1.forcedErrors} p2Val={stats.p2.forcedErrors} lowerIsBetter />
+                        <ExportItem label={t.forcedErrors} p1Val={stats.p1.forcedErrors} p2Val={stats.p2.forcedErrors} />
                         <ExportItem label={t.aggressiveMargin} p1Val={stats.p1.winners - stats.p1.unforcedErrors} p2Val={stats.p2.winners - stats.p2.unforcedErrors} />
                      </>
                   )}
@@ -612,13 +684,13 @@ export const MatchInterface: React.FC<MatchInterfaceProps> = ({ state, lang, onP
                   </div>
                   {mode === 'advanced' ? (
                       <>
-                        <ExportItem label={t.returnFirstServePointsWon} p1Val={getPercentage(stats.p1.returnFirstServePointsWon, stats.p2.firstServesIn)} p2Val={getPercentage(stats.p2.returnFirstServePointsWon, stats.p1.firstServesIn)} format="percent" />
-                        <ExportItem label={t.returnSecondServePointsWon} p1Val={getPercentage(stats.p1.returnSecondServePointsWon, stats.p2.secondServePointsTotal)} p2Val={getPercentage(stats.p2.returnSecondServePointsWon, stats.p1.secondServePointsTotal)} format="percent" />
+                        <ExportItem label={t.returnFirstServePointsWon} p1Val={returnAnalytics(stats.p1, stats.p2).vsFirstServe} p2Val={returnAnalytics(stats.p2, stats.p1).vsFirstServe} format="percent" />
+                        <ExportItem label={t.returnSecondServePointsWon} p1Val={returnAnalytics(stats.p1, stats.p2).vsSecondServe} p2Val={returnAnalytics(stats.p2, stats.p1).vsSecondServe} format="percent" />
                         <ExportItem label={t.returnWinners} p1Val={stats.p1.returnWinners} p2Val={stats.p2.returnWinners} />
                       </>
                   ) : (
                       <>
-                        <ExportItem label={t.pointsWonOnReturn} p1Val={getPercentage(stats.p1.returnPointsWon, stats.p2.servicePointsTotal)} p2Val={getPercentage(stats.p2.returnPointsWon, stats.p1.servicePointsTotal)} format="percent" />
+                        <ExportItem label={t.pointsWonOnReturn} p1Val={returnAnalytics(stats.p1, stats.p2).pointsWon} p2Val={returnAnalytics(stats.p2, stats.p1).pointsWon} format="percent" />
                       </>
                   )}
                   <ExportItem label={t.breakPointsConverted} p1Val={`${stats.p1.breakPointsWon}/${stats.p1.breakPointsOpportunities}`} p2Val={`${stats.p2.breakPointsWon}/${stats.p2.breakPointsOpportunities}`} p1Count={stats.p1.breakPointsWon} p2Count={stats.p2.breakPointsWon} />
